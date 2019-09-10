@@ -1,23 +1,3 @@
-# Copyright 2018 The TensorFlow Authors. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
-"""Train a ResNet-50 model on RxRx1 on TPU.
-
-Original file:
-    https://github.com/tensorflow/tpu/blob/master/models/official/resnet/resnet_main.py
-"""
-
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
@@ -27,12 +7,13 @@ import math
 import os
 import time
 import argparse
-
+import pandas as pd
 import numpy as np
 import tensorflow as tf
 from tensorflow.python.estimator import estimator
 
 from .model import model_fn
+from .transforms import get_transforms
 
 from rxrx import input as rxinput
 
@@ -48,6 +29,51 @@ DEFAULT_INPUT_FN_PARAMS = {
     'prefetch_buffer_size': tf.contrib.data.AUTOTUNE,
 }
 
+PRED_INPUT_FN_PARAMS = {
+    'tfrecord_dataset_buffer_size': 2,
+    'tfrecord_dataset_num_parallel_reads': None,
+    'parallel_interleave_cycle_length': 1,
+    'parallel_interleave_block_length': 1,
+    'parallel_interleave_buffer_output_elements': None,
+    'parallel_interleave_prefetch_input_elements': None,
+    'map_and_batch_num_parallel_calls': 4,
+    'transpose_num_parallel_calls': 4,
+    'prefetch_buffer_size': 2,
+}
+
+url_base = 'gs://rxrx1-us-central1/tfrecords/by_exp_plate_site-42'
+url_base_path = 'gs://rxrx1-us-central1/tfrecords/random-42'
+
+train_df = pd.read_csv('/home/sethwsrg/rxrx1-utils/rxrx1-utils/metadata_train.csv')
+
+test_df = pd.read_csv('/home/sethwsrg/rxrx1-utils/rxrx1-utils/metadata_test.csv')
+
+
+
+DEFAULT_INPUT_FN_PARAMS = {
+    'tfrecord_dataset_buffer_size': 256,
+    'tfrecord_dataset_num_parallel_reads': None,
+    'parallel_interleave_cycle_length': 32,
+    'parallel_interleave_block_length': 1,
+    'parallel_interleave_buffer_output_elements': None,
+    'parallel_interleave_prefetch_input_elements': None,
+    'map_and_batch_num_parallel_calls': 128,
+    'transpose_num_parallel_calls': 128,
+    'prefetch_buffer_size': tf.contrib.data.AUTOTUNE,
+}
+
+PRED_INPUT_FN_PARAMS = {
+    'tfrecord_dataset_buffer_size': 2,
+    'tfrecord_dataset_num_parallel_reads': None,
+    'parallel_interleave_cycle_length': 1,
+    'parallel_interleave_block_length': 1,
+    'parallel_interleave_buffer_output_elements': None,
+    'parallel_interleave_prefetch_input_elements': None,
+    'map_and_batch_num_parallel_calls': 4,
+    'transpose_num_parallel_calls': 4,
+    'prefetch_buffer_size': 2,
+}
+
 # The mean and stds for each of the channels
 GLOBAL_PIXEL_STATS = (np.array([6.74696984, 14.74640167, 10.51260864,
                                 10.45369445,  5.49959796, 9.81545561]),
@@ -59,6 +85,23 @@ def dummy_pad_files(real, dummy, batch_size):
     to_pad = math.ceil(batch_size / 277)
     return np.concatenate([real.tolist(), dummy[:to_pad]])
 
+
+def parse_identifier(label):
+    return label.split(":")
+
+
+def build_input():
+    return None
+
+
+def predict():
+    return None
+
+
+def train():
+    return None
+
+
 def main(use_tpu,
          tpu,
          gcp_project,
@@ -68,7 +111,6 @@ def main(use_tpu,
          model_dir,
          train_epochs,
          train_batch_size,
-         num_train_images,
          epochs_per_loop,
          log_step_count_epochs,
          num_cores,
@@ -81,15 +123,18 @@ def main(use_tpu,
          base_learning_rate,
          warmup_epochs,
          input_fn_params=DEFAULT_INPUT_FN_PARAMS,
-         train_df=None,
-         test_df=None,
+         train_df=train_df,
+         test_df=test_df,
          valid_pct=.2,
          model='resnet',
-         model_depth=50,
+         model_depth=152,
          valid_steps=16,
          pred_batch_size=64,
          dim=512,
-         pred_on_tpu=False):
+         pred_on_tpu=False,
+         seed=8088,
+         sites=[1,2],
+         do_transforms=True):
     if use_tpu & (tpu is None):
         tpu = os.getenv('TPU_NAME')
     tf.logging.info('tpu: {}'.format(tpu))
@@ -97,7 +142,23 @@ def main(use_tpu,
         gcp_project = os.getenv('TPU_PROJECT')
     tf.logging.info('gcp_project: {}'.format(gcp_project))
 
-    steps_per_epoch = (num_train_images // train_batch_size)
+    train_files = rxinput.get_tfrecord_names(url_base, train_df)
+
+    # Get transforms
+
+    transforms = get_transforms() if do_transforms else []
+
+    # Calculate sizes
+
+    train_size = math.floor((1 - valid_pct) * len(train_df)) * len(sites)
+    valid_size = (len(train_df) * len(sites)) - train_size
+
+    train_images_count = train_size * (1 + len(transforms))
+    valid_images_count = valid_size * (1 + len(transforms))
+
+    tf.logging.info('Train size: {}, Valid Size: {}'.format(train_images_count, valid_images_count))
+
+    steps_per_epoch = (train_images_count // train_batch_size)
     train_steps = steps_per_epoch * train_epochs
     current_step = estimator._load_global_step_from_checkpoint_dir(
         model_dir)  # pylint: disable=protected-access,line-too-long
@@ -128,7 +189,7 @@ def main(use_tpu,
     train_model_fn = functools.partial(
         model_fn,
         n_classes=n_classes,
-        num_train_images=num_train_images,
+        num_train_images=train_images_count,
         data_format=data_format,
         transpose_input=transpose_input,
         train_batch_size=train_batch_size,
@@ -144,8 +205,6 @@ def main(use_tpu,
         model=model,
         pred_on_tpu=pred_on_tpu)
 
-
-
     classifier = tf.contrib.tpu.TPUEstimator(
         use_tpu=use_tpu,
         model_fn=train_model_fn,
@@ -154,15 +213,9 @@ def main(use_tpu,
         eval_batch_size=train_batch_size,
         predict_batch_size=train_batch_size,
         eval_on_tpu=True,
-        export_to_cpu=True)
+        export_to_tpu=True)
 
     use_bfloat16 = (tf_precision == 'bfloat16')
-
-    tfrecord_glob = os.path.join(url_base_path, '*.tfrecord')
-
-    tf.logging.info("Train glob: {}".format(tfrecord_glob))
-
-    train_files, valid_files = rxinput.get_tfrecord_names(url_base_path, train_df, True, valid_pct=valid_pct)
 
     train_input_fn = functools.partial(rxinput.input_fn,
                                        train_files,
@@ -170,15 +223,21 @@ def main(use_tpu,
                                        pixel_stats=GLOBAL_PIXEL_STATS,
                                        transpose_input=transpose_input,
                                        use_bfloat16=use_bfloat16,
-                                       dim=dim)
+                                       dim=dim,
+                                       take=train_size,
+                                       shuffle_seed=seed,
+                                       transforms=transforms)
 
     valid_input_fn = functools.partial(rxinput.input_fn,
-                                       valid_files,
+                                       train_files,
                                        input_fn_params=input_fn_params,
                                        pixel_stats=GLOBAL_PIXEL_STATS,
                                        transpose_input=transpose_input,
                                        use_bfloat16=use_bfloat16,
-                                       dim=dim)
+                                       dim=dim,
+                                       skip=train_size,
+                                       take=valid_size,
+                                       shuffle_seed=seed)
 
     tf.logging.info('Training for %d steps (%.2f epochs in total). Current'
                     ' step %d.', train_steps, train_steps / steps_per_epoch,
@@ -187,6 +246,8 @@ def main(use_tpu,
     start_timestamp = time.time()  # This time will include compilation time
 
     classifier.train(input_fn=train_input_fn, max_steps=train_steps)
+
+    classifier.evaluate(input_fn=train_input_fn, steps=steps_per_epoch)
 
     classifier.evaluate(input_fn=valid_input_fn, steps=valid_steps)
 
@@ -208,8 +269,8 @@ def main(use_tpu,
 
         classifier.export_saved_model(os.path.join(model_dir, 'saved_model'), serving_input_receiver_fn)
 
-    test_files = rxinput.get_tfrecord_names(url_base_path, test_df)
-    all_files = rxinput.get_tfrecord_names(url_base_path, train_df)
+    test_files = rxinput.get_tfrecord_names(url_base_path, test_df, sites=sites)
+    all_files = rxinput.get_tfrecord_names(url_base_path, train_df, sites=sites)
 
     classifier_pred = tf.contrib.tpu.TPUEstimator(
         use_tpu=pred_on_tpu,
@@ -219,7 +280,7 @@ def main(use_tpu,
         eval_batch_size=train_batch_size,
         predict_batch_size=pred_batch_size,
         eval_on_tpu=pred_on_tpu,
-        export_to_cpu=True)
+        export_to_tpu=True)
 
     """
     Kind of hacky, but append on some junk files so we use `drop_remainder` in the dataset to get fixed batch sizes for TPU,
@@ -229,6 +290,8 @@ def main(use_tpu,
     so I guess a bit of hackiness is worth it?
     """
 
+    pred_params = {'batch_size': pred_batch_size}
+
     if pred_on_tpu:
         test_files = dummy_pad_files(test_files, all_files, pred_batch_size)
 
@@ -236,7 +299,7 @@ def main(use_tpu,
                                        test_files,
                                        input_fn_params=input_fn_params,
                                        pixel_stats=GLOBAL_PIXEL_STATS,
-                                       transpose_input=pred_on_tpu,
+                                       transpose_input=False,
                                        use_bfloat16=use_bfloat16,
                                        test=True,
                                        dim=dim)
@@ -249,12 +312,17 @@ def main(use_tpu,
                                        all_files,
                                        input_fn_params=input_fn_params,
                                        pixel_stats=GLOBAL_PIXEL_STATS,
-                                       transpose_input=pred_on_tpu,
+                                       transpose_input=False,
                                        use_bfloat16=use_bfloat16,
                                        test=True,
                                        dim=dim)
 
-    return classifier_pred.predict(input_fn=test_input_fn), classifier_pred.predict(input_fn=all_input_fn)
+    return {
+        'test_dataset': test_input_fn(input_fn_params=PRED_INPUT_FN_PARAMS, params=pred_params, id_for_label=True, dim=3).make_one_shot_iterator(),
+        'test_predict': classifier_pred.predict(input_fn=test_input_fn, yield_single_examples=False),
+        'all_dataset': all_input_fn(input_fn_params=PRED_INPUT_FN_PARAMS, params=pred_params, id_for_label=True, dim=3).make_one_shot_iterator(),
+        'all_predict': classifier_pred.predict(input_fn=all_input_fn, yield_single_examples=False)
+    }
 
 
 if __name__ == '__main__':
@@ -308,16 +376,16 @@ if __name__ == '__main__':
     p.add_argument(
         '--train-epochs',
         type=int,
-        default=1,
+        default=30,
         help=(
             'Defining an epoch as one pass through every training example, '
             'the number of total passes through all examples during training. '
             'Implicitly sets the total train steps.'))
-    p.add_argument(
-        '--num-train-images',
-        type=int,
-        default=73000
-    )
+#     p.add_argument(
+#         '--num-train-images',
+#         type=int,
+#         default=73000
+#     )
     p.add_argument(
         '--train-batch-size',
         type=int,
